@@ -6,3 +6,4 @@ pdfplumber
 angle-emb
 InstructorEmbedding
 rank-bm25
+langchain_huggingface

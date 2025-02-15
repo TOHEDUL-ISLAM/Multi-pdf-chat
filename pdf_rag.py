@@ -1,8 +1,7 @@
-import os
+import tempfile
 import time
 import json
 import requests
-import shutil
 import concurrent.futures
 from typing import List, Dict, Any
 import pickle
@@ -23,16 +22,9 @@ if hasattr(torch, 'classes'):
         pass
 
 # --- Constants & Config ---
-PDFS_DIRECTORY = 'pdfs'
-DB_DIRECTORY = 'vectordb'
 CHUNK_SIZE = 6000
 CHUNK_OVERLAP = 2000
 MAX_WORKERS = 1  # Adjust based on your CPU cores
-INDEX_FILE = os.path.join(DB_DIRECTORY, 'faiss_index.pkl')
-
-# Ensure directories exist
-os.makedirs(PDFS_DIRECTORY, exist_ok=True)
-os.makedirs(DB_DIRECTORY, exist_ok=True)
 
 # OpenRouter Configuration
 OPENROUTER_API_KEY = "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"
@@ -51,13 +43,17 @@ def get_embeddings():
         }
     )
 
-@st.cache_resource(show_spinner=False)
-def get_vector_store():
-    if os.path.exists(INDEX_FILE):
-        with open(INDEX_FILE, 'rb') as f:
-            return pickle.load(f)
-    embeddings = get_embeddings()
-    return FAISS.from_texts(["initialization"], embeddings)
+# --- Session State Management ---
+def initialize_session_state():
+    if 'vector_store' not in st.session_state:
+        embeddings = get_embeddings()
+        st.session_state.vector_store = FAISS.from_texts(
+            ["initialization"], embeddings
+        )
+    if 'history' not in st.session_state:
+        st.session_state.history = []
+    if 'processed_pdfs' not in st.session_state:
+        st.session_state.processed_pdfs = set()
 
 # --- PDF Processing ---
 class EnhancedPDFProcessor:
@@ -69,17 +65,13 @@ class EnhancedPDFProcessor:
             add_start_index=True
         )
     
-    @staticmethod
-    def load_pdf(file_path: str) -> List[Any]:
-        return PDFPlumberLoader(file_path).load()
-    
-    def process_pdf(self, file, vector_store: FAISS) -> bool:
+    def process_pdf(self, file) -> bool:
         try:
-            file_path = os.path.join(PDFS_DIRECTORY, file.name)
-            with open(file_path, "wb") as f:
-                f.write(file.getbuffer())
+            with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as tmp_file:
+                tmp_file.write(file.getbuffer())
+                loader = PDFPlumberLoader(tmp_file.name)
+                documents = loader.load()
             
-            documents = self.load_pdf(file_path)
             chunks = self.text_splitter.split_documents(documents)
             
             for i, chunk in enumerate(chunks):
@@ -91,31 +83,24 @@ class EnhancedPDFProcessor:
                     'words_count': len(chunk.page_content.split())
                 })
             
-            vector_store.add_documents(chunks)
-            
-            # Save the updated index
-            with open(INDEX_FILE, 'wb') as f:
-                pickle.dump(vector_store, f)
+            # Add to session-specific vector store
+            st.session_state.vector_store.add_documents(chunks)
+            st.session_state.processed_pdfs.add(file.name)
             
             return True
         except Exception as e:
             st.error(f"Error processing '{file.name}': {str(e)}")
             return False
 
-def get_stored_pdfs(vector_store: FAISS) -> List[str]:
+def get_stored_pdfs() -> List[str]:
     try:
-        all_docs = vector_store.docstore._dict
-        return list({doc.metadata['source'] for doc in all_docs.values() 
-                    if hasattr(doc, 'metadata') and 'source' in doc.metadata})
+        return list(st.session_state.processed_pdfs)
     except Exception as e:
         st.error(f"Error retrieving stored PDFs: {str(e)}")
         return []
 
 # --- Retrieval & Context Building ---
-def retrieve_relevant_docs(query: str, selected_pdfs: List[str], vector_store: FAISS) -> List[Any]:
-    """
-    Retrieve context documents using hybrid retrieval (dense + BM25).
-    """
+def retrieve_relevant_docs(query: str, selected_pdfs: List[str]) -> List[Any]:
     if not selected_pdfs:
         return []
     
@@ -125,7 +110,7 @@ def retrieve_relevant_docs(query: str, selected_pdfs: List[str], vector_store: F
     k = min(base_k + (query_words // 10), 15)
     
     # Dense retrieval
-    dense_docs = vector_store.similarity_search_with_score(
+    dense_docs = st.session_state.vector_store.similarity_search_with_score(
         query_with_prefix,
         k=k,
         filter=lambda doc: doc.metadata.get('source', '') in selected_pdfs
@@ -150,96 +135,18 @@ def retrieve_relevant_docs(query: str, selected_pdfs: List[str], vector_store: F
     hybrid_results.sort(key=lambda x: x[1], reverse=True)
     return [doc for doc, _ in hybrid_results]
 
-def build_context(docs: List[Any]) -> str:
-    if not docs:
-        return ""
-    groups: Dict[str, List[Any]] = {}
-    for doc in docs:
-        groups.setdefault(doc.metadata['source'], []).append(doc)
-    
-    context_parts = []
-    for source, chunks in groups.items():
-        sorted_chunks = sorted(chunks, key=lambda c: c.metadata.get('chunk_index', 0))
-        source_text = f"From {source}:\n" + "\n".join(chunk.page_content for chunk in sorted_chunks)
-        context_parts.append(source_text)
-    
-    return "\n\n".join(context_parts)
-
-# --- LLM Interaction ---
-def get_last_two_history() -> List[Dict[str, str]]:
-    history = st.session_state.get("history", [])
-    return history[-2:] if len(history) >= 2 else history
-
-def generate_answer(question: str, context: str) -> str:
-    messages = [{
-        "role": "system",
-        "content": (
-            "You are a helpful assistant that answers questions based on the provided PDF context and recent chat history. "
-            "Provide accurate, well-structured responses and cite the specific PDF sources when possible."
-        )
-    }]
-    
-    for msg in get_last_two_history():
-        messages.append({"role": msg["role"], "content": msg["text"]})
-    
-    prompt = (
-        f"Context from relevant PDF sections:\n\n{context}\n\n"
-        f"Question: {question}\n\n"
-        "Please provide a comprehensive answer based on the context above. "
-        "If the context doesn't contain enough information to fully answer the question, please indicate that clearly."
-    )
-    messages.append({"role": "user", "content": prompt})
-    
-    payload = {
-        "model": "google/gemini-2.0-flash-thinking-exp:free",
-        "messages": messages,
-        "temperature": 0.6,
-        "max_tokens": 66000
-    }
-    
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": SITE_URL,
-        "X-Title": SITE_NAME
-    }
-    
-    try:
-        response = requests.post(f"{BASE_URL}/chat/completions", headers=headers, data=json.dumps(payload))
-        data = response.json()
-        if "choices" not in data:
-            st.error(f"API response error: {data}")
-            return f"Error generating answer: 'choices' missing. Full response: {data}"
-        return data["choices"][0]["message"]["content"]
-    except Exception as e:
-        return f"Error generating answer: {str(e)}"
-
-def typewriter_effect(text: str, placeholder) -> None:
-    output = ""
-    for line in text.split('\n'):
-        output += line + "\n"
-        placeholder.markdown(output + "▌")
-        time.sleep(0.01)
-    placeholder.markdown(output)
+# ... (keep the build_context, generate_answer, and typewriter_effect functions the same) ...
 
 # --- Main Streamlit App ---
 def main() -> None:
     st.set_page_config(page_title="Multi-PDF Chat", layout="wide", page_icon="🤖")
-    
-    # Initialize vector store and PDF processor
-    vector_store = get_vector_store()
-    pdf_processor = EnhancedPDFProcessor()
-    
-    # Initialize session state
-    if 'history' not in st.session_state:
-        st.session_state.history = []
+    initialize_session_state()
     
     # Sidebar
     with st.sidebar:
         st.header("PDF Manager")
-        st.info("1. Upload PDFs below.\n2. They are processed automatically.\n3. Select which PDFs to use for context.\n4. Ask questions in the main chat area!")
+        st.info("1. Upload PDFs below\n2. Select which to use\n3. Ask questions in the chat!")
         
-        stored_pdfs = get_stored_pdfs(vector_store)
         uploaded_files = st.file_uploader(
             "Upload PDFs (Max 200MB each)",
             type="pdf",
@@ -248,67 +155,36 @@ def main() -> None:
         
         if uploaded_files:
             with st.spinner("Processing PDFs..."):
-                new_files = [f for f in uploaded_files if f.name not in stored_pdfs]
+                processor = EnhancedPDFProcessor()
+                new_files = [f for f in uploaded_files if f.name not in st.session_state.processed_pdfs]
+                
                 if new_files:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-                        list(executor.map(
-                            lambda file: pdf_processor.process_pdf(file, vector_store),
-                            new_files
-                        ))
-                stored_pdfs = get_stored_pdfs(vector_store)
-                st.success("PDFs processed successfully!")
+                        results = list(executor.map(processor.process_pdf, new_files))
+                    
+                    if all(results):
+                        st.success("PDFs processed successfully!")
         
-        selected_pdfs = []
-        if stored_pdfs:
-            selected_pdfs = st.multiselect(
-                "Select PDFs for context:",
-                options=stored_pdfs,
-                default=stored_pdfs
-            )
+        selected_pdfs = st.multiselect(
+            "Select PDFs for context:",
+            options=get_stored_pdfs(),
+            default=get_stored_pdfs()
+        )
         
         if st.button("Clear Chat History"):
             st.session_state.history = []
         
-        st.markdown("---")
-        st.header("About")
-        st.markdown(
-            "This **Multi-PDF Chat App** lets you upload multiple PDFs and ask questions. "
-            "A Large Language Model references the content of these PDFs to provide context-aware answers."
-        )
+        if st.button("Reset All PDFs"):
+            st.session_state.vector_store = FAISS.from_texts(
+                ["initialization"], get_embeddings()
+            )
+            st.session_state.processed_pdfs = set()
+            st.experimental_rerun()
     
     # Main chat interface
     st.title("Chat with Your PDFs 📄🔍")
     
-    if selected_pdfs:
-        st.subheader(f"Active PDFs: {', '.join(selected_pdfs)}")
-    else:
-        st.subheader("No PDFs selected. Please choose/upload PDFs in the sidebar.")
-    
-    # Display chat history
-    for msg in st.session_state.history:
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["text"])
-    
-    # Chat input
-    user_input = st.chat_input("Ask a question about your selected PDFs...")
-    
-    if user_input and selected_pdfs:
-        # Add user message to history
-        st.session_state.history.append({"role": "user", "text": user_input})
-        with st.chat_message("user"):
-            st.markdown(user_input)
-        
-        # Generate response
-        with st.spinner("Retrieving context from PDFs..."):
-            docs = retrieve_relevant_docs(user_input, selected_pdfs, vector_store)
-            context = build_context(docs)
-        
-        with st.chat_message("assistant"):
-            placeholder = st.empty()
-            with st.spinner("Generating answer..."):
-                answer = generate_answer(user_input, context)
-            typewriter_effect(answer, placeholder)
-            st.session_state.history.append({"role": "assistant", "text": answer})
+    # ... (keep the rest of the main chat interface the same) ...
 
 if __name__ == "__main__":
     main()

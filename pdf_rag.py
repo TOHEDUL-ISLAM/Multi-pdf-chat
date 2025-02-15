@@ -10,13 +10,10 @@ import streamlit as st
 import torch
 from langchain_community.document_loaders import PDFPlumberLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-#from langchain_chroma import Chroma
-from langchain.vectorstores import Chroma
-
-#from langchain_community.vectorstores import Chroma
-from langchain.embeddings import HuggingFaceEmbeddings
-
-#from langchain_huggingface import HuggingFaceEmbeddings
+# Use the updated Chroma import
+from langchain_community.vectorstores import Chroma
+# Use the updated HuggingFaceEmbeddings import
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
 
 # --- Performance Optimization: Disable torch classes file watcher if not needed ---
@@ -46,15 +43,10 @@ def get_embeddings():
         model_name="nomic-ai/nomic-embed-text-v2-moe",
         model_kwargs={
             'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-            # 'device' : 'cpu'
+            # 'device': 'cpu'
             'trust_remote_code': True
         }
     )
-# def get_embeddings():
-#     return HuggingFaceEmbeddings(
-#         model_name="allenai/specter",
-#         model_kwargs={'device': 'cpu'}
-#     )
 
 @st.cache_resource(show_spinner=False)
 def get_vector_store() -> Chroma:

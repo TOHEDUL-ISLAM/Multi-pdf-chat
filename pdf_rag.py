@@ -10,9 +10,7 @@ import streamlit as st
 import torch
 from langchain_community.document_loaders import PDFPlumberLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-# Use the updated Chroma import
 from langchain_community.vectorstores import Chroma
-# Use the updated HuggingFaceEmbeddings import
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
 
@@ -30,7 +28,7 @@ MAX_WORKERS = 1  # Adjust based on your CPU cores
 os.makedirs(PDFS_DIRECTORY, exist_ok=True)
 os.makedirs(DB_DIRECTORY, exist_ok=True)
 
-# OpenRouter Configuration
+# OpenRouter Configuration (replace with your actual API key or use an environment variable)
 OPENROUTER_API_KEY = "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"
 BASE_URL = "https://openrouter.ai/api/v1"
 SITE_URL = "http://localhost:8501"
@@ -43,7 +41,6 @@ def get_embeddings():
         model_name="nomic-ai/nomic-embed-text-v2-moe",
         model_kwargs={
             'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-            # 'device': 'cpu'
             'trust_remote_code': True
         }
     )
@@ -124,44 +121,26 @@ def get_stored_pdfs(vector_store: Chroma) -> List[str]:
         st.error(f"Error retrieving stored PDFs: {str(e)}")
     return []
 
-# --- Retrieval & Context Building (Hybrid Retrieval Only) ---
+# --- Retrieval & Context Building (Hybrid Retrieval) ---
 def retrieve_relevant_docs(query: str, selected_pdfs: List[str], vector_store: Chroma) -> List[Any]:
-    """
-    Retrieve context documents for a query using a hybrid retrieval approach.
-    This method fuses dense (semantic) scores with BM25 lexical scores.
-    """
     if not selected_pdfs:
         return []
-    
-    # Prepend the task instruction prefix to the query
     query_with_prefix = "search_query: " + query
-    
-    # Dynamically set k based on query length and number of selected PDFs.
     query_words = len(query.split())
     base_k = min(4 * len(selected_pdfs), 10)
     k = min(base_k + (query_words // 10), 15)
     filter_dict = {"source": {"$in": selected_pdfs}}
-    
-    # Dense retrieval using Chroma (returns (doc, score) pairs)
     dense_results = vector_store.similarity_search_with_relevance_scores(query_with_prefix, k=k, filter=filter_dict)
-    
-    # Build a BM25 index on the retrieved documents.
     docs = [doc for doc, _ in dense_results]
     tokenized_docs = [doc.page_content.split() for doc in docs]
     bm25 = BM25Okapi(tokenized_docs)
-    
-    # Compute BM25 scores for the query (without prefix) once.
     query_tokens = query.split()
     bm25_scores = bm25.get_scores(query_tokens)
-    
-    # Fuse dense and BM25 scores.
     hybrid_results = []
     for idx, (doc, dense_score) in enumerate(dense_results):
         bm25_score = bm25_scores[idx]
-        combined_score = 0.5 * dense_score + 0.5 * bm25_score  # Equal weight fusion
+        combined_score = 0.5 * dense_score + 0.5 * bm25_score
         hybrid_results.append((doc, combined_score))
-    
-    # Sort documents by the combined score in descending order.
     hybrid_results.sort(key=lambda x: x[1], reverse=True)
     return [doc for doc, score in hybrid_results]
 

@@ -34,4 +34,3 @@ rank-bm25>=0.2.1
 huggingface
 langchain_huggingface
 langchain_chroma
-sqlite3

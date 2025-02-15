@@ -1,0 +1,32 @@
+2025-02-14 23:04:22,906 - INFO - Load pretrained SentenceTransformer: allenai/specter
+2025-02-14 23:04:23,753 - WARNING - No sentence-transformers model found with name allenai/specter. Creating a new one with mean pooling.
+2025-02-14 23:04:25,765 - INFO - Anonymized telemetry enabled. See                     https://docs.trychroma.com/telemetry for more information.
+2025-02-14 23:05:22,335 - INFO - Load pretrained SentenceTransformer: allenai/specter
+2025-02-14 23:05:22,661 - WARNING - No sentence-transformers model found with name allenai/specter. Creating a new one with mean pooling.
+2025-02-14 23:05:24,680 - INFO - Anonymized telemetry enabled. See                     https://docs.trychroma.com/telemetry for more information.
+2025-02-14 23:12:49,418 - ERROR - Processing error: [Errno 2] No such file or directory: 'pdfs\\2402.15220v4.pdf'
+Traceback (most recent call last):
+  File "D:\!journey\rags\ollama-playground\chat-with-pdf\pdf_rag.py", line 102, in process_file
+    with open(file_path, "wb") as f:
+         ^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'pdfs\\2402.15220v4.pdf'
+2025-02-14 23:13:00,063 - ERROR - Processing error: [Errno 2] No such file or directory: 'pdfs\\2402.15220v4.pdf'
+Traceback (most recent call last):
+  File "D:\!journey\rags\ollama-playground\chat-with-pdf\pdf_rag.py", line 102, in process_file
+    with open(file_path, "wb") as f:
+         ^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'pdfs\\2402.15220v4.pdf'
+2025-02-14 23:13:08,165 - ERROR - Processing error: [Errno 2] No such file or directory: 'pdfs\\2402.15220v4.pdf'
+Traceback (most recent call last):
+  File "D:\!journey\rags\ollama-playground\chat-with-pdf\pdf_rag.py", line 102, in process_file
+    with open(file_path, "wb") as f:
+         ^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'pdfs\\2402.15220v4.pdf'
+2025-02-14 23:13:08,165 - ERROR - Processing error: [Errno 2] No such file or directory: 'pdfs\\Attn-LLM.pdf'
+Traceback (most recent call last):
+  File "D:\!journey\rags\ollama-playground\chat-with-pdf\pdf_rag.py", line 102, in process_file
+    with open(file_path, "wb") as f:
+         ^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'pdfs\\Attn-LLM.pdf'
+2025-02-14 23:13:46,770 - ERROR - Processing error: [Errno 2] No such file or directory: 'pdfs\\2402.15220v4.pdf'
+2025-02-14 23:13:54,141 - ERROR - Processing error: [Errno 2] No such file or directory: 'pdfs\\2402.15220v4.pdf'

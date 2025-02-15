@@ -1,0 +1,8 @@
+streamlit
+langchain_core
+langchain_community
+langchain_ollama
+pdfplumber
+angle-emb
+InstructorEmbedding
+rank-bm25

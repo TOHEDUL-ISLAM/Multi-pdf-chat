@@ -34,3 +34,36 @@ rank-bm25>=0.2.1
 huggingface
 langchain_huggingface
 langchain_chroma
+streamlit==1.31.1
+torch==2.1.2
+pdfplumber==0.10.3
+faiss-cpu==1.7.4
+rank-bm25==0.2.2
+requests==2.31.0
+
+# LangChain and related packages
+langchain==0.1.5
+langchain-community==0.0.13
+langchain-text-splitters==0.0.1
+langchain-huggingface==0.0.7
+
+# HuggingFace dependencies
+transformers==4.36.2
+sentence-transformers==2.2.2
+
+# PDF processing
+pdf2image==1.16.3
+python-poppler==0.3.0
+
+# Type hints and utilities
+typing-extensions==4.9.0
+python-dotenv==1.0.0
+
+# Concurrent processing
+concurrent-futures==3.0.5
+
+# Optional but recommended
+tqdm==4.66.1  # For progress bars
+numpy==1.24.3  # Required by various dependencies
+pandas==2.1.4  # For data handling
+pillow==10.2.0  # For image processing

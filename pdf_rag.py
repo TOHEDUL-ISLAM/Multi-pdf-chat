@@ -8,66 +8,43 @@ from typing import List, Dict, Any
 
 import streamlit as st
 import torch
-from langchain_community.document_loaders import PDFPlumberLoader
+from langchain_community.document_loaders import PyPDFLoader  # Changed from PDFPlumberLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import FAISS  # Changed from Chroma to FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
 from rank_bm25 import BM25Okapi
-
-# --- Performance Optimization: Disable torch classes file watcher if not needed ---
-torch.classes.__path__ = []
 
 # --- Constants & Config ---
 PDFS_DIRECTORY = 'pdfs'
 DB_DIRECTORY = 'db'
 CHUNK_SIZE = 6000
 CHUNK_OVERLAP = 2000
-MAX_WORKERS = 1  # Adjust based on your CPU cores
+MAX_WORKERS = 1
 
 # Ensure directories exist
 os.makedirs(PDFS_DIRECTORY, exist_ok=True)
 os.makedirs(DB_DIRECTORY, exist_ok=True)
 
-# OpenRouter Configuration (replace with your actual API key or use an environment variable)
-OPENROUTER_API_KEY = "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"
+# OpenRouter Configuration
+OPENROUTER_API_KEY = "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"  # Move to Streamlit secrets
 BASE_URL = "https://openrouter.ai/api/v1"
-SITE_URL = "http://localhost:8501"
+SITE_URL = "https://your-app-url.streamlit.app"  # Update with your Streamlit Cloud URL
 SITE_NAME = "Multi-PDF Chat App"
 
 # --- Initialize embeddings with caching ---
 @st.cache_resource(show_spinner=False)
 def get_embeddings():
     return HuggingFaceEmbeddings(
-        model_name="nomic-ai/nomic-embed-text-v2-moe",
-        model_kwargs={
-            'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-            'trust_remote_code': True
-        }
+        model_name="sentence-transformers/all-MiniLM-L6-v2",  # Changed to a lighter model
+        model_kwargs={'device': 'cpu'}  # Force CPU usage
     )
 
 @st.cache_resource(show_spinner=False)
-def get_vector_store() -> Chroma:
+def get_vector_store():
     embeddings = get_embeddings()
-    store = Chroma(
-        collection_name="multi_pdf_store",
-        embedding_function=embeddings,
-        persist_directory=DB_DIRECTORY
-    )
-    # Check for embedding dimension mismatch via a dummy query.
-    try:
-        store.similarity_search("dimension_test", k=1)
-    except Exception as e:
-        if "dimension" in str(e).lower():
-            shutil.rmtree(DB_DIRECTORY, ignore_errors=True)
-            os.makedirs(DB_DIRECTORY, exist_ok=True)
-            store = Chroma(
-                collection_name="multi_pdf_store",
-                embedding_function=embeddings,
-                persist_directory=DB_DIRECTORY
-            )
-        else:
-            raise e
-    return store
+    if os.path.exists(os.path.join(DB_DIRECTORY, "index.faiss")):
+        return FAISS.load_local(DB_DIRECTORY, embeddings)
+    return FAISS.from_texts(["Initial"], embeddings)
 
 # --- PDF Processing ---
 class EnhancedPDFProcessor:
@@ -76,73 +53,67 @@ class EnhancedPDFProcessor:
             chunk_size=CHUNK_SIZE,
             chunk_overlap=CHUNK_OVERLAP,
             separators=["\n\n", "\n", ".", "!", "?", ",", " ", ""],
-            add_start_index=True
         )
     
     @staticmethod
     def load_pdf(file_path: str) -> List[Any]:
-        return PDFPlumberLoader(file_path).load()
+        return PyPDFLoader(file_path).load()
     
-    def process_pdf(self, file, vector_store: Chroma) -> bool:
+    def process_pdf(self, file, vector_store: FAISS) -> bool:
         try:
             file_path = os.path.join(PDFS_DIRECTORY, file.name)
             with open(file_path, "wb") as f:
                 f.write(file.getbuffer())
+            
             documents = self.load_pdf(file_path)
             chunks = self.text_splitter.split_documents(documents)
+            
+            # Store metadata
+            if 'pdf_metadata' not in st.session_state:
+                st.session_state.pdf_metadata = {}
+            
             for i, chunk in enumerate(chunks):
                 chunk.metadata.update({
                     'source': file.name,
                     'chunk_index': i,
-                    'total_chunks': len(chunks),
-                    'chars_count': len(chunk.page_content),
-                    'words_count': len(chunk.page_content.split())
+                    'total_chunks': len(chunks)
                 })
-            for attempt in range(3):
-                try:
-                    vector_store.add_documents(chunks)
-                    vector_store.persist()
-                    break
-                except Exception:
-                    if attempt == 2:
-                        raise
-                    time.sleep(1)
+                st.session_state.pdf_metadata[chunk.page_content] = chunk.metadata
+            
+            # Add to FAISS
+            vector_store.add_texts(
+                [chunk.page_content for chunk in chunks],
+                metadatas=[chunk.metadata for chunk in chunks]
+            )
+            
+            # Save FAISS index
+            vector_store.save_local(DB_DIRECTORY)
             return True
+            
         except Exception as e:
             st.error(f"Error processing '{file.name}': {str(e)}")
             return False
 
-def get_stored_pdfs(vector_store: Chroma) -> List[str]:
-    try:
-        result = vector_store._collection.get(include=['metadatas'])
-        if result and 'metadatas' in result:
-            return list({meta['source'] for meta in result['metadatas'] if meta and 'source' in meta})
-    except Exception as e:
-        st.error(f"Error retrieving stored PDFs: {str(e)}")
-    return []
+def get_stored_pdfs() -> List[str]:
+    if 'pdf_metadata' not in st.session_state:
+        return []
+    return list(set(meta['source'] for meta in st.session_state.pdf_metadata.values()))
 
-# --- Retrieval & Context Building (Hybrid Retrieval) ---
-def retrieve_relevant_docs(query: str, selected_pdfs: List[str], vector_store: Chroma) -> List[Any]:
+# --- Retrieval & Context Building ---
+def retrieve_relevant_docs(query: str, selected_pdfs: List[str], vector_store: FAISS) -> List[Any]:
     if not selected_pdfs:
         return []
-    query_with_prefix = "search_query: " + query
-    query_words = len(query.split())
-    base_k = min(4 * len(selected_pdfs), 10)
-    k = min(base_k + (query_words // 10), 15)
-    filter_dict = {"source": {"$in": selected_pdfs}}
-    dense_results = vector_store.similarity_search_with_relevance_scores(query_with_prefix, k=k, filter=filter_dict)
-    docs = [doc for doc, _ in dense_results]
-    tokenized_docs = [doc.page_content.split() for doc in docs]
-    bm25 = BM25Okapi(tokenized_docs)
-    query_tokens = query.split()
-    bm25_scores = bm25.get_scores(query_tokens)
-    hybrid_results = []
-    for idx, (doc, dense_score) in enumerate(dense_results):
-        bm25_score = bm25_scores[idx]
-        combined_score = 0.5 * dense_score + 0.5 * bm25_score
-        hybrid_results.append((doc, combined_score))
-    hybrid_results.sort(key=lambda x: x[1], reverse=True)
-    return [doc for doc, score in hybrid_results]
+    
+    k = min(4 * len(selected_pdfs), 10)
+    docs_with_scores = vector_store.similarity_search_with_score(query, k=k)
+    
+    # Filter for selected PDFs
+    filtered_docs = [
+        doc for doc, _ in docs_with_scores 
+        if doc.metadata.get('source') in selected_pdfs
+    ]
+    
+    return filtered_docs
 
 def build_context(docs: List[Any]) -> str:
     if not docs:
@@ -214,27 +185,34 @@ def typewriter_effect(text: str, placeholder) -> None:
 # --- Main Streamlit App ---
 def main() -> None:
     st.set_page_config(page_title="Multi-PDF Chat", layout="wide", page_icon="🤖")
+    
     vector_store = get_vector_store()
     pdf_processor = EnhancedPDFProcessor()
+    
     if 'history' not in st.session_state:
         st.session_state.history = []
     
     with st.sidebar:
         st.header("PDF Manager")
         st.info("1. Upload PDFs below.\n2. They are processed automatically.\n3. Select which PDFs to use for context.\n4. Ask questions in the main chat area!")
-        stored_pdfs = get_stored_pdfs(vector_store)
+        
+        stored_pdfs = get_stored_pdfs()
         uploaded_files = st.file_uploader("Upload PDFs (Max 200MB each)", type="pdf", accept_multiple_files=True)
+        
         if uploaded_files:
             with st.spinner("Processing PDFs..."):
                 new_files = [f for f in uploaded_files if f.name not in stored_pdfs]
                 if new_files:
                     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                         list(executor.map(lambda file: pdf_processor.process_pdf(file, vector_store), new_files))
-            stored_pdfs = get_stored_pdfs(vector_store)
+            stored_pdfs = get_stored_pdfs()
             st.success("PDFs processed successfully!")
+        
         selected_pdfs = st.multiselect("Select PDFs for context:", options=stored_pdfs, default=stored_pdfs) if stored_pdfs else []
+        
         if st.button("Clear Chat History"):
             st.session_state.history = []
+        
         st.markdown("---")
         st.header("About")
         st.markdown("This **Multi-PDF Chat App** lets you upload multiple PDFs and ask questions. A Large Language Model references the content of these PDFs to provide context-aware answers.")

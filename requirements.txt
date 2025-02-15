@@ -35,3 +35,4 @@ huggingface
 langchain_huggingface
 faiss-gpu
 faiss-cpu
+--upgrade pip
